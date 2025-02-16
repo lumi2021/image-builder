@@ -60,41 +60,89 @@ fn make(step: *Step, progress: std.Progress.Node) anyerror!void {
     // Set the file the requested disk size
     img_file.setEndPos(builder.size_bytes) catch unreachable;
 
-    const w = img_file.writer();
+    var w = img_file.writer();
     const r = img_file.reader();
+
+    // random data
+    const sectors_count = builder.size_bytes / 512;
 
     n.end();
     n = progress.start("writing sectors", 1);
     {
         
         var n2 = n.start("MBR", 1);
-        img_file.seekTo(0x1FE) catch unreachable;
-        _ = img_file.write("\x55\xAA") catch unreachable;
-        n2.end();
+        {
+            gotoOffset(img_file, 0, 0x1FE);
+            _ = img_file.write("\x55\xAA") catch unreachable;
+            n2.end();
+        }
 
         n2 = n.start("GPT", 1);
-        img_file.seekTo(0x200) catch unreachable;
-        
-        _ = w.write("EFI PART") catch unreachable;                              // Signature
-        _ = w.write("\x00\x01\x00\x00") catch unreachable;                      // Revision
-        _ = w.writeInt(u64, 96, .little) catch unreachable;    // Header size
-        _ = w.writeInt(u32, 0 , .little) catch unreachable;    // header CRC32 (temp)
+        {
+            gotoSector(img_file, 1);
+            
+            _ = w.write("EFI PART") catch unreachable;             // Signature
+            _ = w.write("\x00\x01\x00\x00") catch unreachable;     // Revision
 
-        _ = w.writeInt(u64, 1, .little) catch unreachable;      // Primary LBA Header
-        _ = w.writeInt(u64, 1, .little) catch unreachable;      // Secondary LBA Header
+            writeI(&w, u64, 96);                        // Header size
+            writeI(&w, u32, 0 );                        // header CRC32 (temp)
 
-        // TODO lots of more data
+            writeI(&w, u64, 1);                         // Primary LBA Header
+            writeI(&w, u64, 1);                         // Secondary LBA Header
 
-        // back a little to calculate header CRC32
-        img_file.seekTo(0x200) catch unreachable;
-        var header: [96]u8 = undefined;
-        _ = r.read(&header) catch unreachable;
-        const hash = Crc32.hash(&header);
-        img_file.seekTo(0x200 + 0x10) catch unreachable;
-        _ = w.writeInt(u32, hash, .little) catch unreachable;
+            writeI(&w, u64, 1);                         // Secondary LBA Header
 
-        n2.end();
+            writeI(&w, u64, 34);                        // First usable LBA
+            writeI(&w, u64, sectors_count);             // Last usable LBA
+
+            writeI(&w, u128, genGuid());                // Disk UUID
+
+            writeI(&w, u32, 2);                         // Partition table LBA
+            writeI(&w, u32, 128);                       // Partition count
+            writeI(&w, u32, 128);                       // Partition entry size
+            writeI(&w, u32, 0 );                        // partition table CRC32 (temp)
+            n2.end();
+        }
+
+        n2 = n.start("Partitions Table", 1);
+        {
+            gotoSector(img_file, 2);
+            _ = w.write("TODO PARTITIONS TABLE :3") catch unreachable;
+            n2.end();
+        }
+
+        n2 = n.start("GPT CRC32", 2);
+        {
+            // back a little to calculate header CRC32
+            gotoSector(img_file, 1);
+            var header: [96]u8 = undefined;
+            _ = r.read(&header) catch unreachable;
+            const hash = Crc32.hash(&header);
+            gotoOffset(img_file, 1, 0x10);
+            writeI(&w, u32, hash);
+            n2.completeOne();
+
+            // back a little to calculate partition CRC32
+
+            n2.end();
+        }
+
         n2 = undefined;
     }
     n.end();
+}
+
+inline fn gotoSector(f: fs.File, sector: u32) void {
+    f.seekTo(sector * 0x200) catch unreachable;
+}
+inline fn gotoOffset(f: fs.File, sector: u32, offset: u32) void {
+    f.seekTo(sector * 0x200 + offset) catch unreachable;
+}
+
+inline fn writeI(w: *fs.File.Writer, comptime T: type, value: T) void {
+    w.writeInt(T, value, .little) catch unreachable;
+}
+
+inline fn genGuid() u128 {
+    return @intCast(std.time.nanoTimestamp());
 }
