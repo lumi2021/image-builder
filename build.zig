@@ -7,11 +7,12 @@ pub fn build(b: *std.Build) void {
     
     const disk = addBuildGPTDiskImage(b, "1M", "lumiOS.img");
 
-    var boot_partition = disk.addPartitionBySectors(.FAT, "Boot", 10);
-    var data_partition = disk.addPartitionBySectors(.FAT, "Data", 2014 - 45);
-
-    boot_partition = undefined;
-    data_partition = undefined;
+    disk.addPartitionBySectors(
+        .FAT,
+        "Data",
+        "disk-data",
+        2014 - 35
+    );
 
     const build_step = b.step("Build", "Try to build this shit");
     build_step.dependOn(&disk.step);

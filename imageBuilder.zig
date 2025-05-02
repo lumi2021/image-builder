@@ -54,10 +54,28 @@ pub const DiskBuilder = struct {
         return self;
     }
 
-    pub inline fn addPartitionBySize(d: *DiskBuilder, fsys: FileSystem, name: []const u8, size: usize) *Partition {
-        return addPartitionBySectors(d, fsys, name, std.math.divCeil(usize, size, 512) catch unreachable);
+    pub inline fn addPartitionBySize(
+        d: *DiskBuilder,
+        fsys: FileSystem,
+        name: []const u8,
+        path: []const u8,
+        size: usize,
+    ) void {
+        addPartitionBySectors(
+            d,
+            fsys,
+            name,
+            path,
+            std.math.divCeil(usize, size, 512) catch unreachable
+        );
     }
-    pub fn addPartitionBySectors(d: *DiskBuilder, fsys: FileSystem, name: []const u8, length: usize) *Partition {
+    pub fn addPartitionBySectors(
+        d: *DiskBuilder,
+        fsys: FileSystem,
+        name: []const u8,
+        path: []const u8,
+        length: usize
+    ) void {
         const b = d.owner;
 
         const new_partition = b.allocator.create(Partition) catch unreachable;
@@ -65,21 +83,24 @@ pub const DiskBuilder = struct {
 
         new_partition.* = .{
             .name = name,
+            .path = path,
             .size = length,
-            .filesystem = fsys
+            .filesystem = fsys,
+            .owner = b,
         };
-
-        return new_partition;
     }
 
 };
 
-pub const Partition = struct {
+const Partition = struct {
     name: []const u8,
+    path: []const u8,
     filesystem: FileSystem,
 
     start: usize = undefined,
     size: usize,
+
+    owner: *Build,
 };
 
 pub const FileSystem = enum {
@@ -93,7 +114,7 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
     const b = builder.owner;
     const progress = &options.progress_node;
 
-    var n = progress.start("creating image file", 1);
+    var n = progress.start("Creating Image File", 1);
 
     const paths = [_][]const u8{ b.install_path, builder.output_path };
     const img_out_file = std.fs.path.joinZ(b.allocator, &paths) catch unreachable;
@@ -125,7 +146,8 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
     const last_useable = last_sector - table_sectors - 1;
 
     n.end();
-    n = progress.start("writing sectors", 1);
+
+    n = progress.start("Writing Headers", 1);
     {
         
         var n2 = n.start("Creating Protective MBR", 1);
@@ -227,7 +249,7 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
         n2 = n.start("Calculating GPT Table's CRC32", 3);
         {
             var buf = b.allocator.alloc(u8, 128 * 128) catch unreachable;
-            const buf_2: []u8 = buf[0 .. 512];
+            const buf_2: []u8 = buf[0 .. 92];
 
             // back a little
             gotoSector(img_file, 2);
@@ -276,6 +298,66 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
         n2 = undefined;
     }
     n.end();
+
+    // After here,
+    // Writing all the partitions
+
+    const partitions = builder.partitions.items;
+    
+    n = progress.start("Writing Partitions", partitions.len);
+    {
+        for (partitions) |i| {
+            writePartition(b, &n, img_file, i);
+            n.completeOne();
+        }
+    }
+    n.end();
+}
+
+inline fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *Partition) void {
+
+    switch (partition.filesystem) {
+        .FAT => writePartition_FAT(b, p, f, partition)
+    }
+
+}
+
+fn writePartition_FAT(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *Partition) void {
+
+    _ = b;
+    _ = p;
+    _ = f;
+
+    const total_sectors = partition.size;
+    const bytes_per_sector = 512;
+    const sectors_per_cluster = 1;
+    const num_fats = 2;
+    const reserved_sectors = 1;
+    const max_root_dir_entries = 512;
+
+    var sectors_per_fat: usize = 1;
+    var cluster_count: usize = undefined;
+    
+    {
+        var iterations: usize = 0;
+        var old_sectors_per_fat: usize = 0;
+        while (iterations < 0xFFFFF and sectors_per_fat != old_sectors_per_fat) : (iterations += 1) {
+            old_sectors_per_fat = sectors_per_fat;
+            cluster_count = total_sectors - reserved_sectors - sectors_per_fat * num_fats;
+            sectors_per_fat = std.math.divCeil(usize, cluster_count * 12, 8 * bytes_per_sector) catch unreachable;
+        }
+    }
+
+    _ = sectors_per_cluster;
+    _ = max_root_dir_entries;
+
+    if (cluster_count <= 4084) @panic("FAT 12")
+    else if (cluster_count <= 65524) @panic("FAT 16")
+    else @panic("FAT 32");
+
+    //const root_dir_sectors = std.math.divCeil(usize, max_root_dir_entries * 32, bytes_per_sector) catch unreachable;
+    //const data_sectors = total_sectors - reserved_sectors - (num_fats * sec)
+
 }
 
 
