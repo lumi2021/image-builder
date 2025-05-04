@@ -5,6 +5,8 @@ const fs = std.fs;
 const Crc32 = std.hash.Crc32;
 const PartitionList = std.ArrayList(*Partition);
 
+const datetime = @import("deps/zig-datetime/main.zig");
+
 pub fn addBuildGPTDiskImage(b: *Build, comptime size: []const u8, out_path: []const u8) *DiskBuilder {
     comptime var str_size: []const u8 = undefined;
     var multiplier: usize = 1;
@@ -413,9 +415,15 @@ fn writePartition_FAT(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
     n = p.start("Writing Content", 1);
     {
         const first_fat_sector = partition.start + reserved_sectors;
-        var first_free_sector = first_fat_sector + sectors_per_fat * num_fats;
+        const fat_table_end = first_fat_sector + sectors_per_fat * num_fats;
+
+        const first_root_entry = fat_table_end;
+        const root_entry_lend = first_root_entry + (max_root_dir_entries * 32) / 512;
+
+        var first_free_sector = root_entry_lend;
         var free_sectors_count = total_sectors - first_free_sector;
         
+
         const root_path = fs.realpathAlloc(b.allocator, partition.path)
         catch |err| switch (err) {
             else => @panic("Unexpected error!"),
@@ -431,50 +439,146 @@ fn writePartition_FAT(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
         var root_walker = root_dir.walk(b.allocator) catch unreachable;
         var next_nullable = root_walker.next() catch unreachable;
 
-        const StringList = std.ArrayList([]const u8);
+        const DirEntryStruct = struct { path: []const u8, sector: u32, last_entry: u32 };
+        const StringList = std.ArrayList(DirEntryStruct);
         var dir_stack = StringList.init(b.allocator);
-        dir_stack.append(b.allocator.dupe(u8, "") catch unreachable) catch unreachable;
+        dir_stack.append(.{
+            .path = b.allocator.dupe(u8, "") catch unreachable,
+            .sector = @truncate(first_root_entry),
+            .last_entry = 0
+        }) catch unreachable;
 
         while (next_nullable != null) : (next_nullable = root_walker.next() catch unreachable) {
             const next = next_nullable.?;
-            var current_dir: []const u8 = dir_stack.getLast();
+
+            var current_dir_entry: *DirEntryStruct = &dir_stack.items[dir_stack.items.len - 1];
+            var current_dir = current_dir_entry.path;
+            var is_root = dir_stack.items.len <= 1;
 
             const path_dir_length = std.mem.lastIndexOfLinear(u8, next.path, std.fs.path.sep_str) orelse 0;
             const path_dir = next.path[0 .. path_dir_length];
 
-            const data = std.fmt.allocPrint(b.allocator, "" ++
-                "name: {s:\x00<26}" ++
-                "kind: {s:\x00<26}" ++
-                "path: {s:\x00<58}" ++
-                "pdir: {s:\x00<58}",
-            .{
-                next.basename,
-                @tagName(next.kind),
-                next.path,
-                path_dir
-            }) catch unreachable;
-            _ = w.write(data) catch unreachable;
-
             while (!std.mem.eql(u8, current_dir, path_dir)) {
-                    b.allocator.free(dir_stack.pop().?);
-                    current_dir = dir_stack.getLast();
+                b.allocator.free(dir_stack.pop().?.path);
+                current_dir_entry = &dir_stack.items[dir_stack.items.len - 1];
+                current_dir = current_dir_entry.path;
+                is_root = dir_stack.items.len <= 1;
             }
 
-            _ = w.write(@as([]const u8, &.{0}) ** 32) catch unreachable;
-
+            // quick check for valid entries only and
+            // directory setup
             if (next.kind == .directory) {
-                const dupe_path = b.allocator.dupe(u8, next.path) catch unreachable;
-                dir_stack.append(dupe_path) catch unreachable;
-            }
-            else if (next.kind == .file) {
 
-            }
+                const dupe_path = b.allocator.dupe(u8, next.path) catch unreachable;
+                dir_stack.append(.{
+                    .path = dupe_path,
+                    .sector = @truncate(first_free_sector),
+                    .last_entry = 0
+                }) catch unreachable;
+
+                first_free_sector += 1;
+                free_sectors_count -= 1;
+
+            } else if (next.kind == .file) {}
             else std.debug.panic("Invalid entry of type \'{s}\'", .{@tagName(next.kind)});
 
-            b.allocator.free(data);
+            // jumping to entry (better to make it here
+            // as things will be writen if the name is in long mode)
+            gotoOffset(f, current_dir_entry.sector, current_dir_entry.last_entry * 32);
+
+            var name: []const u8 = undefined;
+            var ext: ?[]const u8 = null;
+
+            var name_8: [8]u8 = undefined;
+            var ext_3:  [3]u8 = undefined;
+
+            // lots of name related things bruh
+            {
+                if (next.kind == .directory) name = next.basename
+                else { // file extension must be separated here
+                    const dot_pos = std.mem.lastIndexOfScalar(u8, next.basename, '.');
+                    name = if (dot_pos) |d| next.basename[0 .. d] else next.basename;
+                    ext = if (dot_pos) |d| next.basename[d+1..] else "";
+                }
+
+                if (name.len > 8 or (ext != null and ext.?.len > 8)) {
+                    const long_name = b.allocator.alloc(u16, next.basename.len) catch unreachable;
+                    _ = std.unicode.utf8ToUtf16Le(long_name, next.basename) catch unreachable;
+                    // jump it for now
+                }
+
+                if (name.len > 8) {
+                    @memcpy(name_8[0..6], name[0..6]);
+                    @memcpy(name_8[6..8], "~1");
+                } else {
+                    @memcpy(name_8[0..name.len], name);
+                    @memset(name_8[name.len..], 0);
+                }
+
+                if (ext != null) {
+                    if (ext.?.len > 3) {
+                        @memcpy(&ext_3, ext.?[0..3]);
+                    } else {
+                        @memcpy(ext_3[0 .. ext.?.len], ext.?);
+                        @memset(ext_3[ext.?.len ..], 0);
+                    }
+                } else @memset(&ext_3, 0);
+            }
+
+            // writing entry in table
+            _ = w.write(&name_8) catch unreachable;                                     // name
+            _ = w.write(&ext_3) catch unreachable;                                      // extension
+            writeI(&w, u8, if (next.kind == .directory) (1 << 4) else 0);   // attributes
+            writeI(&w, u8, 0);                                              // user attributes
+            writeI(&w, u8, 0);                                              // (???)
+                        
+            const entrymeta = next.dir.metadata() catch unreachable;
+            const created_timestamp: i64 = @truncate(@divTrunc((entrymeta.created() orelse 0), 1_000_000));
+            const acessed_timestamp: i64 = @truncate(@divTrunc(entrymeta.accessed(), 1_000_000));
+            const modifid_timestamp: i64 = @truncate(@divTrunc(entrymeta.modified(), 1_000_000));
+            const dt1 = datetime.datetime.Datetime.fromTimestamp(created_timestamp);
+            const dt2 = datetime.datetime.Datetime.fromTimestamp(acessed_timestamp);
+            const dt3 = datetime.datetime.Datetime.fromTimestamp(modifid_timestamp);
+
+            const time1: WordTime = .{
+                .secconds = @truncate(dt1.time.second / 2),
+                .minutes = @truncate(dt1.time.minute),
+                .hours = @truncate(dt1.time.hour)
+            };
+            const time3: WordTime = .{
+                .secconds = @truncate(dt3.time.second / 2),
+                .minutes = @truncate(dt3.time.minute),
+                .hours = @truncate(dt3.time.hour)
+            };
+            const date1: WordDate = .{
+                .day = @truncate(dt1.date.day),
+                .month = @truncate(dt1.date.month),
+                .year = @truncate(dt1.date.year - 1980)
+            };
+            const date2: WordDate = .{
+                .day = @truncate(dt2.date.day),
+                .month = @truncate(dt2.date.month),
+                .year = @truncate(dt2.date.year - 1980)
+            };
+            const date3: WordDate = .{
+                .day = @truncate(dt3.date.day),
+                .month = @truncate(dt3.date.month),
+                .year = @truncate(dt3.date.year - 1980)
+            };
+
+            writeI(&w, u16, @bitCast(time1));                                // creation time
+            writeI(&w, u16, @bitCast(date1));                                // creation date
+            writeI(&w, u16, @bitCast(date2));                                // acessed date
+            writeI(&w, u16, @truncate(first_fat_sector >> 8));               // high cluster
+            writeI(&w, u16, @bitCast(time3));                                // modified time
+            writeI(&w, u16, @bitCast(date3));                                // modified date
+            writeI(&w, u16, @truncate(first_fat_sector & 0xFFFF));           // low cluster
+            writeI(&w, u32, 0);                                              // size in bytes (TODO)
+
+            current_dir_entry.last_entry += 1;
         }
 
-        while (dir_stack.items.len > 0) b.allocator.free(dir_stack.pop().?);
+        while (dir_stack.items.len > 0) b.allocator.free(dir_stack.pop().?.path);
         dir_stack.deinit();
     }
     n.end();
@@ -500,3 +604,15 @@ inline fn genGuid() u128 {
 
     return std.mem.readInt(u128, &uuid, @import("builtin").cpu.arch.endian());
 }
+
+// Structures used in the FAT dir entries
+const WordTime = packed struct(u16) {
+    hours: u5,
+    minutes: u6,
+    secconds: u5,
+};
+const WordDate = packed struct(u16) {
+    year: u7,
+    month: u4,
+    day: u5
+};
