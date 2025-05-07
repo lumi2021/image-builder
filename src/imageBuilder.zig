@@ -40,7 +40,12 @@ pub const DiskBuilder = struct {
         const self = b.allocator.create(@This()) catch unreachable;
         self.* = .{
             .owner = b,
-            .step = Build.Step.init(.{ .id = .custom, .name = "Build Image", .owner = b, .makeFn = make }),
+            .step = Build.Step.init(.{
+                .id = .custom,
+                .name = "Build Image",
+                .owner = b,
+                .makeFn = make,
+            }),
             .output_path = output_path,
             .size_sectors = size_bytes / 512,
 
