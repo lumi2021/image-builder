@@ -5,13 +5,13 @@ const addBuildGPTDiskImage = imageBuilder.addBuildGPTDiskImage;
 
 pub fn build(b: *std.Build) void {
     
-    const disk = addBuildGPTDiskImage(b, "4M", "lumiOS.img");
+    const disk = addBuildGPTDiskImage(b, "20M", "lumiOS.img");
 
     disk.addPartitionBySize(
         .FAT,
-        "Data",
+        "Main",
         "disk-data",
-        3 * 1024 * 1024
+        19 * 1024 * 1024
     );
 
     const build_step = b.step("Build", "Try to build this shit");
