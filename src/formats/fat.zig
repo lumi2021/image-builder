@@ -328,36 +328,45 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
                     ext = if (dot_pos) |d| next.basename[d + 1 ..] else "";
                 }
 
-                if (name.len > 8) {
-                    // TODO check also for extension
+                var use_long_name = false;
 
+                if (name.len > 8) {
+                    _ = std.ascii.upperString(&name_8, name[0..6]);
+                    use_long_name = true;
+                } else {
+                    if (!isAllUppercase(name)) use_long_name = true;
+                    _ = std.ascii.upperString(&name_8, name);
+                    @memset(name_8[name.len..], ' ');
+                }
+                
+                if (ext) |_ext| {
+                    if (_ext.len > 3) {
+                        _ = std.ascii.upperString(&ext_3, _ext[0..3]);
+                        use_long_name = true;
+                    } else {
+                        if (!isAllUppercase(_ext)) use_long_name = true;
+                        _ = std.ascii.upperString(&ext_3, _ext);
+                        @memset(ext_3[_ext.len..], ' ');
+                    }
+                } else @memset(&ext_3, ' ');
+
+                if (use_long_name) {
+                    // format the short name
                     var rep: usize = 1;
-                    const res = current_dir_entry.entries.getOrPut(name[0..6]) catch unreachable;
+                    var str_entry: [9]u8 = undefined;
+                    @memcpy(str_entry[0..6], name_8[0..6]);
+                    @memcpy(str_entry[6..9], &ext_3);
+
+                    const res = current_dir_entry.entries.getOrPut(&str_entry) catch unreachable;
                     if (res.found_existing) {
                         res.value_ptr.* = res.value_ptr.* + 1;
                         rep = res.value_ptr.*;
                     } else res.value_ptr.* = rep;
 
-                    var buf: [2]u8 = undefined;
-                    _ = std.fmt.bufPrint(&buf, "~{}", .{rep}) catch unreachable;
+                    name_8[6] = '~';
+                    name_8[7] = '0' + @as(u8, @truncate(rep));
 
-                    @memcpy(name_8[0..6], name[0..6]);
-                    @memcpy(name_8[6..8], &buf);
-                } else {
-                    @memcpy(name_8[0..name.len], name);
-                    @memset(name_8[name.len..], ' ');
-                }
-
-                if (ext != null) {
-                    if (ext.?.len > 3) {
-                        @memcpy(&ext_3, ext.?[0..3]);
-                    } else {
-                        @memcpy(ext_3[0..ext.?.len], ext.?);
-                        @memset(ext_3[ext.?.len..], ' ');
-                    }
-                } else @memset(&ext_3, ' ');
-
-                if (name.len > 8 or (ext != null and ext.?.len > 8)) {
+                    // convert the name to utf16LE and write it
                     const len = std.unicode.utf8ToUtf16Le(long_name_buf, next.basename) catch unreachable;
                     const entry_count = std.math.divCeil(usize, len, 13) catch unreachable;
                     @memset(long_name_buf[len..], 0);
@@ -365,23 +374,28 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
                     var ri: usize = entry_count;
                     var i: usize = 0;
 
+                    //ri = undefined;
+                    //i = undefined;
+                    //_ = long_name_ptr;
+
                     // write the name parts
-                    while (ri > 0) : ({
-                        ri -= 1;
-                        i += 1;
-                    }) {
+                    while (ri > 0) : ({ ri -= 1; i += 1; }) {
                         const eslice = long_name_ptr[(ri - 1) * 26 ..];
-                        const seqnum: u8 = @truncate(if (i == 0) 0x41 else (i + 1));
+                        const seqnum: u8 = @truncate(if (i == 0) (0x40 | ri) else ri);
                         const checksum = lfnChecksum(name_8, ext_3);
 
                         writeI(&w, u8, seqnum); // sequence num
+
                         _ = w.write(eslice[0..10]) catch unreachable; // 10-byte slice
+
                         writeI(&w, u8, 0x0F); // attributes (aways 0x0F)
-                        writeI(&w, u8, 0x00); // data (aways 0)
+                        writeI(&w, u8, 0x00); // type (aways 0)
                         writeI(&w, u8, checksum); // checksum
-                        _ = w.write(eslice[10..24]) catch unreachable; // 12-byte slice
+
+                        _ = w.write(eslice[10..22]) catch unreachable; // 12-byte slice
+
                         writeI(&w, u16, 0); // cluster (aways 0x0000);
-                        _ = w.write(eslice[24..26]) catch unreachable; // 2-byte slice
+                        _ = w.write(eslice[22..26]) catch unreachable; // 2-byte slice
 
                         current_dir_entry.last_entry += 1;
                     }
@@ -439,7 +453,8 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
     {
         // important configurations before
         // copy it
-        //writeFATEntry(f, first_fat_sector, fat_fs, 1, 0xFFFFFFFF);
+        writeFATEntry(f, first_fat_sector, fat_fs, 0,
+        switch (fat_fs) { .FAT12 => 0xFF8, .FAT16 => 0xFFF8, .FAT32 => 0xFFFFFFF8});
 
         // TODO copying
     }
@@ -534,3 +549,8 @@ const WordDate = packed struct(u16) {
     month: u4,
     year: u7,
 };
+
+fn isAllUppercase(s: []const u8) bool {
+    for (s) |c| if (std.ascii.isAlphabetic(c) and !std.ascii.isUpper(c)) return false;
+    return true;
+}
