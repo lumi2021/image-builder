@@ -1,7 +1,4 @@
 .vscode/
-
 .zig-cache/
 zig-out/
 
-mnt1/
-mnt2/

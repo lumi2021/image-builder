@@ -11,6 +11,10 @@ pub const size_constants = .{
     .KiB = 2,
     .MiB = 1024 * 2,
     .GiB = 1024 * 1024 * 2,
+
+    // MBR + GPT header + 32-sectors table
+    // + GPT backut + 32-sectors table backup
+    .GPT_reserved_sectors = 3 + 64,
 };
 
 pub fn addBuildGPTDiskImage(b: *Build, comptime size_sectors: usize, out_path: []const u8) *DiskBuilder {
@@ -25,7 +29,7 @@ pub const DiskBuilder = struct {
     output_path: []const u8,
     partitions: PartitionList,
 
-    pub fn create(b: *Build, size_bytes: usize, output_path: []const u8) *@This() {
+    pub fn create(b: *Build, size_sectors: usize, output_path: []const u8) *@This() {
         const self = b.allocator.create(@This()) catch unreachable;
         self.* = .{
             .owner = b,
@@ -36,7 +40,7 @@ pub const DiskBuilder = struct {
                 .makeFn = make,
             }),
             .output_path = output_path,
-            .size_sectors = size_bytes / 512,
+            .size_sectors = size_sectors,
 
             .partitions = PartitionList.init(b.allocator),
         };
@@ -44,16 +48,7 @@ pub const DiskBuilder = struct {
         return self;
     }
 
-    pub inline fn addPartitionBySize(
-        d: *DiskBuilder,
-        fsys: FileSystem,
-        name: []const u8,
-        path: []const u8,
-        size: usize,
-    ) void {
-        addPartitionBySectors(d, fsys, name, path, std.math.divCeil(usize, size, 512) catch unreachable);
-    }
-    pub fn addPartitionBySectors(d: *DiskBuilder, fsys: FileSystem, name: []const u8, path: []const u8, length: usize) void {
+    pub fn addPartition(d: *DiskBuilder, fsys: FileSystem, name: []const u8, path: []const u8, length: usize) void {
         const b = d.owner;
 
         const new_partition = b.allocator.create(Partition) catch unreachable;
