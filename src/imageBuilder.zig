@@ -7,25 +7,14 @@ const PartitionList = std.ArrayList(*Partition);
 
 const formats = @import("formats/formats.zig");
 
+pub const size_constants = .{
+    .KiB = 2,
+    .MiB = 1024 * 2,
+    .GiB = 1024 * 1024 * 2,
+};
 
-pub fn addBuildGPTDiskImage(b: *Build, comptime size: []const u8, out_path: []const u8) *DiskBuilder {
-    comptime var str_size: []const u8 = undefined;
-    var multiplier: usize = 1;
-
-    if (comptime std.ascii.isAlphabetic(size[size.len - 1])) {
-        str_size = comptime size[0..(size.len - 1)];
-
-        switch (size[size.len - 1]) {
-            'k', 'K' => multiplier = 1024,
-            'm', 'M' => multiplier = 1024 * 1024,
-            'g', 'G' => multiplier = 1024 * 1024 * 1024,
-            else => @compileError("unexpected size indicator '" ++ size[size.len - 1 .. size.len] ++ "'"),
-        }
-    } else str_size = size;
-
-    const int_size = comptime std.fmt.parseInt(usize, str_size, 16) catch @compileError("\"" ++ str_size ++ "\" is a not valid hexadecimal unsigned number!");
-
-    return DiskBuilder.create(b, int_size * multiplier, out_path);
+pub fn addBuildGPTDiskImage(b: *Build, comptime size_sectors: usize, out_path: []const u8) *DiskBuilder {
+    return DiskBuilder.create(b, size_sectors, out_path);
 }
 
 pub const DiskBuilder = struct {
