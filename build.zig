@@ -1,5 +1,5 @@
 const std = @import("std");
-const imageBuilder = @import("src/imageBuilder.zig");
+const imageBuilder = @import("image-builder/main.zig");
 
 const addBuildGPTDiskImage = imageBuilder.addBuildGPTDiskImage;
 
@@ -9,13 +9,13 @@ const GPTr = imageBuilder.size_constants.GPT_reserved_sectors;
 
 pub fn build(b: *std.Build) void {
     
-    const disk = addBuildGPTDiskImage(b, 20*MiB, "lumiOS.img");
+    const disk = addBuildGPTDiskImage(b, 20*MiB, "mydisk.img");
 
     disk.addPartition(
-        .FAT,
+        .vFAT,
         "Main",
         "disk-data",
-        19*MiB
+        20*MiB - GPTr
     );
 
     const build_step = b.step("Build", "Try to build this shit");
