@@ -145,7 +145,7 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
         const first_data_sector = root_entry_end;
         const dsoff = first_data_sector - 2;
 
-        var sec_alloc: SAlloc = .{ .first = @truncate(first_data_sector), .length = @truncate(total_sectors - first_data_sector) };
+        var sec_alloc: SAlloc = .{ .first = @truncate(first_data_sector), .length = @truncate(partition.start + total_sectors - first_data_sector) };
 
         const root_path = fs.realpathAlloc(b.allocator, partition.path) catch |err| switch (err) {
             error.FileNotFound => { std.debug.panic("Directory in path \"{s}\" not found!", .{partition.path}); unreachable; },
