@@ -78,6 +78,7 @@ pub fn write_headers(
 fn get_partition_type(partition: *const imageBuilder.Partition) u8 {
 
     switch (partition.filesystem) {
+        .empty => return 0xDA,
         .vFAT => {
 
             const MiB = 1024 * 2;

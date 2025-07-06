@@ -104,6 +104,10 @@ pub fn write_headers(
                         _ = w.write("\x28\x73\x2a\xc1\x1f\xf8\xd2\x11") catch unreachable;
                         _ = w.write("\xba\x4b\x00\xa0\xc9\x3e\xc9\x3b") catch unreachable;
                     },
+                    .empty => {
+                        _ = w.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
+                        _ = w.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
+                    },
                     else => std.debug.panic("Unhandled file system {s}!", .{@tagName(i.filesystem)})
                 }
                 writeI(&w, u128, genGuid()); // partition unique GUID

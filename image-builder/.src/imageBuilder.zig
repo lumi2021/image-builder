@@ -144,6 +144,7 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
 inline fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *Partition) void {
     switch (partition.filesystem) {
         ._unused => {},
+        .empty => {},
         .vFAT => formats.fat.writePartition(b, p, f, partition),
     }
 }
