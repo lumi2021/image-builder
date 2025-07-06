@@ -93,7 +93,10 @@ pub fn write_headers(
 
             var utf16_buf: [72]u16 = undefined;
 
-            for (partitions, 0..) |i, index| {
+            var index: usize = 0;
+            for (partitions) |i| {
+                if (i.filesystem == ._unused) continue;
+
                 gotoOffset(img_file, 2, @truncate(index * 128));
 
                 switch (i.filesystem) { // paartition type GUID
@@ -101,6 +104,7 @@ pub fn write_headers(
                         _ = w.write("\x28\x73\x2a\xc1\x1f\xf8\xd2\x11") catch unreachable;
                         _ = w.write("\xba\x4b\x00\xa0\xc9\x3e\xc9\x3b") catch unreachable;
                     },
+                    else => std.debug.panic("Unhandled file system {s}!", .{@tagName(i.filesystem)})
                 }
                 writeI(&w, u128, genGuid()); // partition unique GUID
 
@@ -116,6 +120,7 @@ pub fn write_headers(
 
                 i.start = offset;
                 offset += i.size + 1;
+                index += 1;
             }
 
             n2.end();

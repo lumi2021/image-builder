@@ -22,6 +22,8 @@ pub const DiskBuilder = struct {
     output_path: []const u8,
     partitions: PartitionList,
 
+    __gaps: usize = 0,
+
     pub fn create(b: *Build, layout: DiskLayout, size_sectors: usize, output_path: []const u8) *@This() {
         const self = b.allocator.create(@This()) catch unreachable;
         self.* = .{
@@ -57,6 +59,26 @@ pub const DiskBuilder = struct {
             .filesystem = fsys,
             .owner = b,
         };
+    }
+    /// Add an gap after the last partition
+    pub fn addGap(d: *DiskBuilder, length: usize) void {
+        const b = d.owner;
+
+        const gap = b.allocator.create(Partition) catch unreachable;
+        d.partitions.append(gap) catch unreachable;
+
+        const name = b.allocator.alloc(u8, 5) catch @panic("OOM");
+        _ = std.fmt.bufPrint(name, "gap{:0>2}", .{ d.__gaps }) catch unreachable;
+
+        gap.* = .{
+            .name = name,
+            .path = undefined,
+            .size = length,
+            .filesystem = ._unused,
+            .owner = b,
+        };
+
+        d.__gaps += 1;
     }
 };
 
@@ -121,6 +143,7 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
 
 inline fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *Partition) void {
     switch (partition.filesystem) {
+        ._unused => {},
         .vFAT => formats.fat.writePartition(b, p, f, partition),
     }
 }
