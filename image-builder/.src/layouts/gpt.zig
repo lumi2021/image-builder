@@ -2,6 +2,7 @@ const std = @import("std");
 const imageBuilder = @import("../imageBuilder.zig");
 const layouts = @import("layouts.zig");
 const Crc32 = std.hash.Crc32;
+const Guid = @import("../Guid.zig").Guid;
 
 pub fn write_headers(
     img_file: std.fs.File,
@@ -77,7 +78,9 @@ pub fn write_headers(
             writeI(&w, u64, first_useable); // First usable LBA
             writeI(&w, u64, last_useable); // Last usable LBA
 
-            writeI(&w, u128, genGuid()); // Disk GUID
+            const disk_guid = if (builder.identifier) |idtf|
+                Guid.fromString(idtf) catch @panic("Invalid GUID identifier") else Guid.new();
+            writeI(&w, u128, @bitCast(disk_guid)); // Disk GUID
 
             writeI(&w, u64, 2); // Partition table LBA
             writeI(&w, u32, 128); // Partition entry count
@@ -110,7 +113,10 @@ pub fn write_headers(
                     },
                     else => std.debug.panic("Unhandled file system {s}!", .{@tagName(i.filesystem)})
                 }
-                writeI(&w, u128, genGuid()); // partition unique GUID
+
+                const part_guid = if (i.identifier) |idtf|
+                    Guid.fromString(idtf) catch @panic("Invalid GUID identifier") else Guid.new();
+                writeI(&w, u128, @bitCast(part_guid)); // partition unique GUID
 
                 writeI(&w, u64, offset); // first LBA
                 writeI(&w, u64, offset + i.size); // last LBA
@@ -193,4 +199,3 @@ pub fn write_headers(
 const gotoSector = imageBuilder.gotoSector;
 const gotoOffset = imageBuilder.gotoOffset;
 const writeI = imageBuilder.writeI;
-const genGuid = imageBuilder.genGuid;

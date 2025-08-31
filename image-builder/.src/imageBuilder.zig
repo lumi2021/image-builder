@@ -9,8 +9,19 @@ const layouts = @import("layouts/layouts.zig");
 pub const DiskLayout = layouts.DiskLayout;
 pub const FileSystem = formats.FileSystem;
 
-pub fn addBuildDiskImage(b: *Build, layout: DiskLayout, size_sectors: usize, out_path: []const u8) *DiskBuilder {
-    return DiskBuilder.create(b, layout, size_sectors, out_path);
+pub fn addBuildDiskImage(
+    b: *Build,
+    layout: DiskLayout,
+    size_sectors: usize,
+    identifier: ?[]const u8,
+    out_path: []const u8,
+) *DiskBuilder {
+    return DiskBuilder.create(
+        b, layout,
+        size_sectors,
+        identifier,
+        out_path,
+    );
 }
 
 pub const DiskBuilder = struct {
@@ -21,10 +32,17 @@ pub const DiskBuilder = struct {
     size_sectors: usize,
     output_path: []const u8,
     partitions: PartitionList,
+    identifier: ?[]const u8,
 
     __gaps: usize = 0,
 
-    pub fn create(b: *Build, layout: DiskLayout, size_sectors: usize, output_path: []const u8) *@This() {
+    pub fn create(
+        b: *Build,
+        layout: DiskLayout,
+        size_sectors: usize,
+        identifier: ?[]const u8,
+        output_path: []const u8,
+    ) *@This() {
         const self = b.allocator.create(@This()) catch unreachable;
         self.* = .{
             .owner = b,
@@ -39,6 +57,7 @@ pub const DiskBuilder = struct {
             .output_path = output_path,
 
             .partitions = PartitionList.init(b.allocator),
+            .identifier = identifier,
         };
 
         return self;
@@ -47,6 +66,19 @@ pub const DiskBuilder = struct {
     /// Add a partition to the disk, using `path` as the content source (relative to the root). \
     /// Make sure `length` is big enough to fit all the content!
     pub fn addPartition(d: *DiskBuilder, fsys: FileSystem, name: []const u8, path: []const u8, length: usize) void {
+        addPartitionWithIdentifier(d, fsys, name, path, length, null);
+    }
+    /// Add a partition to the disk, using `path` as the content source (relative to the root). \
+    /// Allows to indicate a specific identifier to the partition. \
+    /// Make sure `length` is big enough to fit all the content!
+    pub fn addPartitionWithIdentifier(
+        d: *DiskBuilder,
+        fsys: FileSystem,
+        name: []const u8,
+        path: []const u8,
+        length: usize,
+        ident: ?[]const u8,
+    ) void {
         const b = d.owner;
 
         const new_partition = b.allocator.create(Partition) catch unreachable;
@@ -55,11 +87,13 @@ pub const DiskBuilder = struct {
         new_partition.* = .{
             .name = name,
             .path = path,
+            .identifier = ident,
             .size = length,
             .filesystem = fsys,
             .owner = b,
         };
     }
+
     /// Add an gap after the last partition
     pub fn addGap(d: *DiskBuilder, length: usize) void {
         const b = d.owner;
@@ -85,6 +119,7 @@ pub const DiskBuilder = struct {
 pub const Partition = struct {
     name: []const u8,
     path: []const u8,
+    identifier: ?[]const u8 = null,
     filesystem: FileSystem,
 
     start: usize = undefined,
@@ -162,15 +197,6 @@ pub inline fn writeI(w: *fs.File.Writer, comptime T: type, value: T) void {
     w.writeInt(T, value, .little) catch unreachable;
 }
 
-pub inline fn genGuid() u128 {
-    var uuid: [16]u8 = undefined;
-    std.crypto.random.bytes(&uuid);
-
-    uuid[6] = (uuid[6] & 0x0F) | 0x40;
-    uuid[8] = (uuid[8] & 0x3F) | 0x80;
-
-    return std.mem.readInt(u128, &uuid, @import("builtin").cpu.arch.endian());
-}
 
 pub const SectorAllocator = struct {
     first: u32,
