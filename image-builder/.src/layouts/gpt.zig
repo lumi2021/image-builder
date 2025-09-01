@@ -98,7 +98,7 @@ pub fn write_headers(
 
             var index: usize = 0;
             for (partitions) |i| {
-                if (i.filesystem == ._unused) continue;
+                if (i.filesystem == ._unused) { offset += i.size; continue; }
 
                 gotoOffset(img_file, 2, @truncate(index * 128));
 
@@ -119,7 +119,7 @@ pub fn write_headers(
                 writeI(&w, u128, @bitCast(part_guid)); // partition unique GUID
 
                 writeI(&w, u64, offset); // first LBA
-                writeI(&w, u64, offset + i.size); // last LBA
+                writeI(&w, u64, offset + i.size - 1); // last LBA
 
                 writeI(&w, u64, 0); // attributes
 
@@ -128,8 +128,8 @@ pub fn write_headers(
                 _ = std.unicode.utf8ToUtf16Le(&utf16_buf, i.name) catch unreachable;
                 _ = w.write(@as([*]u8, @ptrCast(&utf16_buf))[0 .. 72 * 2]) catch unreachable;
 
-                i.start = offset;
-                offset += i.size + 1;
+                i.start = offset+1;
+                offset += i.size;
                 index += 1;
             }
 
