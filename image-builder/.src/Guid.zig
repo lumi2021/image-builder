@@ -35,25 +35,43 @@ pub const Guid = packed struct {
             i += 2;
             j += 1;
         }
+        if (j != 16) return error.InvalidFormat;
         return fromSlice(&buf);
     }
 
     /// format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     pub fn format(s: *const @This(), comptime _: []const u8, _: std.fmt.FormatOptions, fmt: anytype) !void {
-        const bytes: *const [16]u8 = std.mem.asBytes(s);
+        const bytes: [16]u8 = s.toBytes();
 
-        try fmt.print("{x:0>8}-{x:0>4}-{x:0>4}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
+        try fmt.print("{x:0>2}{x:0>2}{x:0>2}{x:0>2}-",
             .{
-                s.data1,
-                s.data2,
-                s.data3,
-
-                bytes[8], bytes[9],
+                bytes[3], bytes[2],
+                bytes[1], bytes[0],
+            }
+        );
+        try fmt.print("{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-",
+            .{
+                bytes[5], bytes[4],
+                bytes[7], bytes[6],
+            }
+        );
+        try fmt.print("{x:0>2}{x:0>2}-", .{bytes[8], bytes[9]});
+        try fmt.print("{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
+            .{
                 bytes[10], bytes[11],
                 bytes[12], bytes[13],
                 bytes[14], bytes[15],
             }
         );
+    }
+
+    fn toBytes(self: *const Guid) [16]u8 {
+        var out: [16]u8 = undefined;
+        std.mem.writeInt(u32, out[0.. 4], self.data1, .big);
+        std.mem.writeInt(u16, out[4.. 6], self.data2, .big);
+        std.mem.writeInt(u16, out[6.. 8], self.data3, .big);
+        std.mem.writeInt(u64, out[8..16], self.data4, .little);
+        return out;
     }
 
     pub fn isZero(self: @This()) bool {
