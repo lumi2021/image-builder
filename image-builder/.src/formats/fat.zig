@@ -12,7 +12,13 @@ const gotoOffset = imageBuilder.gotoOffset;
 const writeI = imageBuilder.writeI;
 const SAlloc = imageBuilder.SectorAllocator;
 
-pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *Partition) void {
+pub fn writePartition(
+    b: *Build,
+    p: *std.Progress.Node,
+    writer: *fs.File.Writer,
+    reader: *fs.File.Reader,
+    partition: *Partition,
+) void {
     var n = p.start("Detecting format", 1);
 
     const total_sectors = partition.size;
@@ -73,13 +79,10 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
         else => unreachable,
     };
 
-    var w = f.writer();
-    //const r = f.reader();
-
     n.end();
     n = p.start("Writing Boot Sector", 1);
     {
-        gotoSector(f, @truncate(partition.start));
+        gotoSector(writer, @truncate(partition.start));
 
         const total_sectors_short: u16 = if (total_sectors > 0xFFFF) 0 else @truncate(total_sectors);
         const total_sectors_long: u32 = if (total_sectors_short == 0) @truncate(total_sectors) else 0;
@@ -87,48 +90,48 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
         const fat_size_short: u16 = if (cluster_bit_size == 32) 0 else @truncate(sectors_per_fat);
         const fat_size_long: u32 = if (fat_size_short == 0) @truncate(sectors_per_fat) else 0;
 
-        _ = w.write("\xEB\x3C\x90") // jump struction
+        _ = writer.interface.write("\xEB\x3C\x90") // jump struction
             catch unreachable; // (must generate a page fault if executed)
-        _ = w.write("LUMI\x20\x20\x20\x20") // OEM name
+        _ = writer.interface.write("LUMI\x20\x20\x20\x20") // OEM name
             catch unreachable;
 
         // BIOS Parameter Block:
 
         // DOS 2.0 (0x08 .. 0x18)
-        gotoOffset(f, @truncate(partition.start), 0x0b);
+        gotoOffset(writer, @truncate(partition.start), 0x0b);
 
-        writeI(&w, u16, @truncate(bytes_per_sector)); // bytes per sector
-        writeI(&w, u8, @truncate(sectors_per_cluster)); // sectors per cluster
-        writeI(&w, u16, @truncate(reserved_sectors)); // reserved sectors count
-        writeI(&w, u8, num_fats); // FAT tables count
-        writeI(&w, u16, @truncate(max_root_dir_entries)); // Max root dir entries
-        writeI(&w, u16, total_sectors_short); // Total logical sectors short
-        writeI(&w, u8, 0xF8); // Media descriptor
-        writeI(&w, u16, fat_size_short); // FAT sectors size short
+        writeI(writer, u16, @truncate(bytes_per_sector)); // bytes per sector
+        writeI(writer, u8, @truncate(sectors_per_cluster)); // sectors per cluster
+        writeI(writer, u16, @truncate(reserved_sectors)); // reserved sectors count
+        writeI(writer, u8, num_fats); // FAT tables count
+        writeI(writer, u16, @truncate(max_root_dir_entries)); // Max root dir entries
+        writeI(writer, u16, total_sectors_short); // Total logical sectors short
+        writeI(writer, u8, 0xF8); // Media descriptor
+        writeI(writer, u16, fat_size_short); // FAT sectors size short
 
         // DOS 3.31 (0x18 .. 0x24)
-        writeI(&w, u16, 1); // legacy CHS
-        writeI(&w, u16, 0); // legacy CHS
-        writeI(&w, u32, 0); // hidden sectors before partition
-        writeI(&w, u32, total_sectors_long); // Total logical sectors long
+        writeI(writer, u16, 1); // legacy CHS
+        writeI(writer, u16, 0); // legacy CHS
+        writeI(writer, u32, 0); // hidden sectors before partition
+        writeI(writer, u32, total_sectors_long); // Total logical sectors long
 
         // Extended BPB (0x24 ..)
-        writeI(&w, u8, 0); // phys driver number
-        writeI(&w, u8, 0); // reserved
-        writeI(&w, u8, 0x29); // extended boot signature
+        writeI(writer, u8, 0); // phys driver number
+        writeI(writer, u8, 0); // reserved
+        writeI(writer, u8, 0x29); // extended boot signature
 
         const timestamp: u32 = @truncate(@as(u64, @bitCast(std.time.timestamp())) & 0xFFFFFFFF);
-        writeI(&w, u32, timestamp); // volume ID
-        _ = w.write("NO NAME    ") catch unreachable; // Partition name
+        writeI(writer, u32, timestamp); // volume ID
+        _ = writer.interface.write("NO NAME    ") catch unreachable; // Partition name
         _ = switch (cluster_bit_size) { // fs type
-            12 => w.write("FAT12   "),
-            16 => w.write("FAT16   "),
-            32 => w.write("FAT32   "),
+            12 => writer.interface.write("FAT12   "),
+            16 => writer.interface.write("FAT16   "),
+            32 => writer.interface.write("FAT32   "),
             else => unreachable,
         } catch unreachable;
 
-        gotoOffset(f, @truncate(partition.start), 0x1FE);
-        _ = w.write("\x55\xAA") catch unreachable; // boot signature
+        gotoOffset(writer, @truncate(partition.start), 0x1FE);
+        _ = writer.interface.write("\x55\xAA") catch unreachable; // boot signature
 
         _ = fat_size_long;
     }
@@ -193,22 +196,25 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
         };
         const DirEntryStack = std.ArrayList(*DirEntryStruct);
 
-        var dir_stack = DirEntryStack.init(b.allocator);
-        dir_stack.append(DirEntryStruct.init(b.allocator, "", @truncate(first_root_entry))) catch unreachable;
+        var dir_stack = DirEntryStack.empty;
+        defer dir_stack.deinit(b.allocator);
+        dir_stack.append(b.allocator, DirEntryStruct.init(b.allocator, "", @truncate(first_root_entry))) catch unreachable;
 
         while (next_nullable != null) : (next_nullable = root_walker.next() catch unreachable) {
             const next = next_nullable.?;
 
             var file_data: fs.File = undefined;
             var dir_data: fs.Dir = undefined;
-            var entrymeta: fs.File.Metadata = undefined;
+            var entrymeta: fs.File.Stat = undefined;
 
             if (next.kind == .file) {
                 file_data = root_dir.openFile(next.path, .{ .mode = .read_only }) catch unreachable;
-                entrymeta = file_data.metadata() catch unreachable;
+                entrymeta = file_data.stat() catch unreachable;
+
             } else if (next.kind == .directory) {
                 dir_data = root_dir.openDir(next.path, .{}) catch unreachable;
-                entrymeta = dir_data.metadata() catch unreachable;
+                entrymeta = dir_data.stat() catch unreachable;
+
             } else std.debug.panic("Invalid entry of type \'{s}\'", .{@tagName(next.kind)});
 
             var current_dir_entry: *DirEntryStruct = dir_stack.getLast();
@@ -236,7 +242,7 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
             var date2: WordDate = undefined;
             var date3: WordDate = undefined;
 
-            const size: u32 = @truncate(if (next.kind == .directory) 0 else entrymeta.size());
+            const size: u32 = @truncate(if (next.kind == .directory) 0 else entrymeta.size);
 
             const long_name_buf = b.allocator.alloc(u16, 256) catch unreachable;
             const long_name_ptr = @as([*]u8, @ptrCast(@alignCast(long_name_buf.ptr)))[0..512];
@@ -251,66 +257,66 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
             if (next.kind == .directory) {
                 entry_sector = sec_alloc.getOne();
 
-                dir_stack.append(DirEntryStruct.init(b.allocator, next.path, entry_sector)) catch unreachable;
+                dir_stack.append(b.allocator, DirEntryStruct.init(b.allocator, next.path, entry_sector)) catch unreachable;
                 dir_stack.getLast().last_entry = 2;
 
                 // entries . and ..
-                gotoSector(f, entry_sector);
+                gotoSector(writer, entry_sector);
 
                 const dot_cluster = entry_sector - dsoff;
-                _ = w.write(".          ") catch unreachable; // name + extension
-                writeI(&w, u8, 0x10); // attributes
-                writeI(&w, u8, 0); // user attributes
-                writeI(&w, u8, 0); // (???)
-                writeI(&w, u16, 0);
-                writeI(&w, u16, 0);
-                writeI(&w, u16, 0);
-                writeI(&w, u16, @truncate(dot_cluster >> 16)); // high cluster
-                writeI(&w, u32, 0);
-                writeI(&w, u16, @truncate(dot_cluster & 0xFFFF)); // low cluster
-                writeI(&w, u32, 0); // size in bytes
+                _ = writer.interface.write(".          ") catch unreachable; // name + extension
+                writeI(writer, u8, 0x10); // attributes
+                writeI(writer, u8, 0); // user attributes
+                writeI(writer, u8, 0); // (???)
+                writeI(writer, u16, 0);
+                writeI(writer, u16, 0);
+                writeI(writer, u16, 0);
+                writeI(writer, u16, @truncate(dot_cluster >> 16)); // high cluster
+                writeI(writer, u32, 0);
+                writeI(writer, u16, @truncate(dot_cluster & 0xFFFF)); // low cluster
+                writeI(writer, u32, 0); // size in bytes
 
                 const dotdot_cluster = if (is_root) 0 else current_dir_entry.start_sector - dsoff;
-                _ = w.write("..         ") catch unreachable; // name + extension
-                writeI(&w, u8, 0x10); // attributes
-                writeI(&w, u8, 0); // user attributes
-                writeI(&w, u8, 0); // (???)
-                writeI(&w, u16, 0);
-                writeI(&w, u16, 0);
-                writeI(&w, u16, 0);
-                writeI(&w, u16, @truncate(dotdot_cluster >> 16)); // high cluster
-                writeI(&w, u32, 0);
-                writeI(&w, u16, @truncate(dotdot_cluster & 0xFFFF)); // low cluster
-                writeI(&w, u32, 0); // size in bytes
+                _ = writer.interface.write("..         ") catch unreachable; // name + extension
+                writeI(writer, u8, 0x10); // attributes
+                writeI(writer, u8, 0); // user attributes
+                writeI(writer, u8, 0); // (???)
+                writeI(writer, u16, 0);
+                writeI(writer, u16, 0);
+                writeI(writer, u16, 0);
+                writeI(writer, u16, @truncate(dotdot_cluster >> 16)); // high cluster
+                writeI(writer, u32, 0);
+                writeI(writer, u16, @truncate(dotdot_cluster & 0xFFFF)); // low cluster
+                writeI(writer, u32, 0); // size in bytes
 
                 // TODO make directory cluster chains work
-                writeFATEscape(f, first_fat_sector, fat_fs, entry_sector - dsoff, .end_of_chain);
+                writeFATEscape(writer, reader, first_fat_sector, fat_fs, entry_sector - dsoff, .end_of_chain);
             } else if (next.kind == .file) {
                 entry_sector = sec_alloc.peek();
 
                 var current_sector: u32 = undefined;
                 var last_sector: ?u32 = null;
 
-                const file_size_in_sectors = std.math.divCeil(usize, entrymeta.size(), 512) catch unreachable;
+                const file_size_in_sectors = std.math.divCeil(usize, entrymeta.size, 512) catch unreachable;
 
                 const buf = b.allocator.alloc(u8, 512) catch unreachable;
 
                 for (0..file_size_in_sectors) |_| {
                     current_sector = sec_alloc.getOne();
-                    gotoSector(f, current_sector);
+                    gotoSector(writer, current_sector);
 
                     const len = file_data.read(buf) catch |err| switch (err) {
                         else => std.debug.panic("Unexpected error {s}!", .{@errorName(err)}),
                     };
-                    _ = w.write(buf[0..len]) catch unreachable;
+                    _ = writer.interface.write(buf[0..len]) catch unreachable;
 
                     if (last_sector) |ls| {
-                        writeFATEntry(f, first_fat_sector, fat_fs, ls - dsoff, current_sector - dsoff);
+                        writeFATEntry(writer, reader, first_fat_sector, fat_fs, ls - dsoff, current_sector - dsoff);
                     }
 
                     last_sector = current_sector;
                 }
-                writeFATEscape(f, first_fat_sector, fat_fs, current_sector - dsoff, .end_of_chain);
+                writeFATEscape(writer, reader, first_fat_sector, fat_fs, current_sector - dsoff, .end_of_chain);
                 b.allocator.free(buf);
             }
 
@@ -319,7 +325,7 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
             //
 
             // jumping to entry
-            gotoOffset(f, current_dir_entry.current_sector, current_dir_entry.last_entry * 32);
+            gotoOffset(writer, current_dir_entry.current_sector, current_dir_entry.last_entry * 32);
 
             // lots of name related things bruh
             {
@@ -381,18 +387,18 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
                         const seqnum: u8 = @truncate(if (i == 0) (0x40 | ri) else ri);
                         const checksum = lfnChecksum(name_8, ext_3);
 
-                        writeI(&w, u8, seqnum); // sequence num
+                        writeI(writer, u8, seqnum); // sequence num
 
-                        _ = w.write(eslice[0..10]) catch unreachable; // 10-byte slice
+                        _ = writer.interface.write(eslice[0..10]) catch unreachable; // 10-byte slice
 
-                        writeI(&w, u8, 0x0F); // attributes (aways 0x0F)
-                        writeI(&w, u8, 0x00); // type (aways 0)
-                        writeI(&w, u8, checksum); // checksum
+                        writeI(writer, u8, 0x0F); // attributes (aways 0x0F)
+                        writeI(writer, u8, 0x00); // type (aways 0)
+                        writeI(writer, u8, checksum); // checksum
 
-                        _ = w.write(eslice[10..22]) catch unreachable; // 12-byte slice
+                        _ = writer.interface.write(eslice[10..22]) catch unreachable; // 12-byte slice
 
-                        writeI(&w, u16, 0); // cluster (aways 0x0000);
-                        _ = w.write(eslice[22..26]) catch unreachable; // 2-byte slice
+                        writeI(writer, u16, 0); // cluster (aways 0x0000);
+                        _ = writer.interface.write(eslice[22..26]) catch unreachable; // 2-byte slice
 
                         current_dir_entry.last_entry += 1;
                     }
@@ -401,9 +407,9 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
 
             // lots of time related things bruh
             {
-                const created_timestamp: i64 = @truncate(@divTrunc((entrymeta.created() orelse 0), 1_000_000));
-                const acessed_timestamp: i64 = @truncate(@divTrunc(entrymeta.accessed(), 1_000_000));
-                const modifid_timestamp: i64 = @truncate(@divTrunc(entrymeta.modified(), 1_000_000));
+                const created_timestamp: i64 = @truncate(@divTrunc(entrymeta.ctime, 1_000_000));
+                const acessed_timestamp: i64 = @truncate(@divTrunc(entrymeta.atime, 1_000_000));
+                const modifid_timestamp: i64 = @truncate(@divTrunc(entrymeta.mtime, 1_000_000));
                 const dt1 = datetime.datetime.Datetime.fromTimestamp(created_timestamp);
                 const dt2 = datetime.datetime.Datetime.fromTimestamp(acessed_timestamp);
                 const dt3 = datetime.datetime.Datetime.fromTimestamp(modifid_timestamp);
@@ -419,19 +425,19 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
             {
                 const cluster = entry_sector - first_data_sector + 2;
 
-                _ = w.write(&name_8) catch unreachable; // name
-                _ = w.write(&ext_3) catch unreachable; // extension
-                writeI(&w, u8, if (next.kind == .directory) 0x10 else 0x00); // attributes
-                writeI(&w, u8, 0); // user attributes
-                writeI(&w, u8, 0); // (???)
-                writeI(&w, u16, @bitCast(time1)); // creation time
-                writeI(&w, u16, @bitCast(date1)); // creation date
-                writeI(&w, u16, @bitCast(date2)); // acessed date
-                writeI(&w, u16, @truncate(cluster >> 16)); // high cluster
-                writeI(&w, u16, @bitCast(time3)); // modified time
-                writeI(&w, u16, @bitCast(date3)); // modified date
-                writeI(&w, u16, @truncate(cluster & 0xFFFF)); // low cluster
-                writeI(&w, u32, size); // size in bytes
+                _ = writer.interface.write(&name_8) catch unreachable; // name
+                _ = writer.interface.write(&ext_3) catch unreachable; // extension
+                writeI(writer, u8, if (next.kind == .directory) 0x10 else 0x00); // attributes
+                writeI(writer, u8, 0); // user attributes
+                writeI(writer, u8, 0); // (???)
+                writeI(writer, u16, @bitCast(time1)); // creation time
+                writeI(writer, u16, @bitCast(date1)); // creation date
+                writeI(writer, u16, @bitCast(date2)); // acessed date
+                writeI(writer, u16, @truncate(cluster >> 16)); // high cluster
+                writeI(writer, u16, @bitCast(time3)); // modified time
+                writeI(writer, u16, @bitCast(date3)); // modified date
+                writeI(writer, u16, @truncate(cluster & 0xFFFF)); // low cluster
+                writeI(writer, u32, size); // size in bytes
 
                 current_dir_entry.last_entry += 1;
             }
@@ -439,10 +445,7 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
             if (next.kind == .directory) dir_data.close() else file_data.close();
         }
 
-        while (dir_stack.items.len > 0) {
-            dir_stack.pop().?.deinit();
-        }
-        dir_stack.deinit();
+        while (dir_stack.items.len > 0) dir_stack.pop().?.deinit();
     }
     n.end();
 
@@ -450,7 +453,7 @@ pub fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *
     {
         // important configurations before
         // copy it
-        writeFATEntry(f, first_fat_sector, fat_fs, 0,
+        writeFATEntry(writer, reader, first_fat_sector, fat_fs, 0,
         switch (fat_fs) { .FAT12 => 0xFF8, .FAT16 => 0xFFF8, .FAT32 => 0xFFFFFFF8});
 
         // TODO copying
@@ -472,15 +475,20 @@ fn lfnChecksum(name: [8]u8, extension: [3]u8) u8 {
     return sum;
 }
 
-fn writeFATEntry(f: fs.File, ffats: usize, fat_fs: FatFS, cluster: usize, value: usize) void {
-    var w = f.writer();
-    const r = f.reader();
+fn writeFATEntry(
+    writer: *fs.File.Writer,
+    reader: *fs.File.Reader,
+    ffats: usize,
+    fat_fs: FatFS,
+    cluster: usize,
+    value: usize,
+) void {
 
     if (fat_fs == .FAT12) {
         const fat_cluster_offset: u32 = @truncate((cluster * 3) / 2);
-        gotoOffset(f, @truncate(ffats), fat_cluster_offset);
-        var cluster_value1 = r.readByte() catch unreachable;
-        var cluster_value2 = r.readByte() catch unreachable;
+        gotoOffset(writer, @truncate(ffats), fat_cluster_offset);
+        var cluster_value1 = reader.interface.takeByte() catch unreachable;
+        var cluster_value2 = reader.interface.takeByte() catch unreachable;
 
         if (cluster % 2 == 0) {
             cluster_value1 = @truncate(value & 0xFF);
@@ -490,20 +498,28 @@ fn writeFATEntry(f: fs.File, ffats: usize, fat_fs: FatFS, cluster: usize, value:
             cluster_value2 = @truncate((value >> 4) & 0xFF);
         }
 
-        gotoOffset(f, @truncate(ffats), fat_cluster_offset);
-        w.writeByte(cluster_value1) catch unreachable;
-        w.writeByte(cluster_value2) catch unreachable;
+        gotoOffset(writer, @truncate(ffats), fat_cluster_offset);
+        writer.interface.writeByte(cluster_value1) catch unreachable;
+        writer.interface.writeByte(cluster_value2) catch unreachable;
+
     } else if (fat_fs == .FAT16) {
         const fat_cluster_offset: usize = @as(usize, @intCast(cluster)) * 2;
-        gotoOffset(f, @truncate(ffats), fat_cluster_offset);
-        writeI(&w, u16, @truncate(value));
+        gotoOffset(writer, @truncate(ffats), fat_cluster_offset);
+        writeI(writer, u16, @truncate(value));
     } else {
         const fat_cluster_offset: u32 = @truncate(cluster * 4);
-        gotoOffset(f, @truncate(ffats), fat_cluster_offset);
-        writeI(&w, u32, @truncate(value));
+        gotoOffset(writer, @truncate(ffats), fat_cluster_offset);
+        writeI(writer, u32, @truncate(value));
     }
 }
-fn writeFATEscape(f: fs.File, ffats: usize, fat_fs: FatFS, cluster: usize, value: FatEscape) void {
+fn writeFATEscape(
+    writer: *fs.File.Writer,
+    reader: *fs.File.Reader,
+    ffats: usize,
+    fat_fs: FatFS,
+    cluster: usize,
+    value: FatEscape,
+) void {
     const escape_value: u32 = switch (value) {
         .free => switch (fat_fs) {
             .FAT12 => 0x000,
@@ -526,7 +542,7 @@ fn writeFATEscape(f: fs.File, ffats: usize, fat_fs: FatFS, cluster: usize, value
             .FAT32 => 0xFFFFFFF8,
         },
     };
-    writeFATEntry(f, ffats, fat_fs, cluster, escape_value);
+    writeFATEntry(writer, reader, ffats, fat_fs, cluster, escape_value);
 }
 
 const FatFS = enum {

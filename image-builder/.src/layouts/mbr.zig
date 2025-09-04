@@ -4,13 +4,14 @@ const layouts = @import("layouts.zig");
 const Crc32 = std.hash.Crc32;
 
 pub fn write_headers(
-    img_file: std.fs.File,
+    writer: *std.fs.File.Writer,
+    reader: *std.fs.File.Reader,
     builder: *imageBuilder.DiskBuilder,
     _: *std.Build,
     progress: *const std.Progress.Node,
 ) !layouts.Limits {
 
-    var w = img_file.writer();
+    _ = reader;
 
     // random data
     const sectors_count: usize = builder.size_sectors;
@@ -31,8 +32,8 @@ pub fn write_headers(
 
             if (p.filesystem != ._unused) {
 
-                gotoOffset(img_file, 0, 0x1BE + index * 16);
-                writeI(&w, u8, 0x80);
+                gotoOffset(writer, 0, 0x1BE + index * 16);
+                writeI(writer, u8, 0x80);
 
                 const cylinder_0 = p_start / (255 * 63);
                 const temp_0 = p_start % (255 * 63);
@@ -40,10 +41,10 @@ pub fn write_headers(
                 const sector_0 = (temp_0 % 63) + 1;
                 const addr_0: u16 = @truncate((sector_0 & 0x3F) | ((std.math.shr(usize, cylinder_0, p_start)) & 0xC0));
 
-                writeI(&w, u8, head_0); // start CHS head (legacy)
-                writeI(&w, u16, addr_0); // start CHS addr (legacy)
+                writeI(writer, u8, head_0); // start CHS head (legacy)
+                writeI(writer, u16, addr_0); // start CHS addr (legacy)
 
-                writeI(&w, u8, get_partition_type(p));
+                writeI(writer, u8, get_partition_type(p));
 
                 const cylinder_1 = p_end / (255 * 63);
                 const temp_1 = p_end % (255 * 63);
@@ -51,11 +52,11 @@ pub fn write_headers(
                 const sector_1 = (temp_1 % 63) + 1;
                 const addr_1: u16 = @truncate((sector_1 & 0x3F) | ((cylinder_1 >> 2) & 0xC0));
 
-                writeI(&w, u8, head_1); // end CHS head (legacy)
-                writeI(&w, u16, addr_1); // end CHS (legacy)
+                writeI(writer, u8, head_1); // end CHS head (legacy)
+                writeI(writer, u16, addr_1); // end CHS (legacy)
 
-                writeI(&w, u32, p_start); // first sector
-                writeI(&w, u32, p_end); // last sector
+                writeI(writer, u32, p_start); // first sector
+                writeI(writer, u32, p_end); // last sector
 
                 index += 1;
             }
@@ -63,8 +64,8 @@ pub fn write_headers(
         }
 
         // BOOT sector signature
-        gotoOffset(img_file, 0, 0x1FE);
-        _ = img_file.write("\x55\xAA") catch unreachable;
+        gotoOffset(writer, 0, 0x1FE);
+        _ = writer.interface.write("\x55\xAA") catch unreachable;
     }
     n.end();
 

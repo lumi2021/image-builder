@@ -56,7 +56,7 @@ pub const DiskBuilder = struct {
             .size_sectors = size_sectors,
             .output_path = output_path,
 
-            .partitions = PartitionList.init(b.allocator),
+            .partitions = .empty,
             .identifier = identifier,
         };
 
@@ -82,7 +82,7 @@ pub const DiskBuilder = struct {
         const b = d.owner;
 
         const new_partition = b.allocator.create(Partition) catch unreachable;
-        d.partitions.append(new_partition) catch unreachable;
+        d.partitions.append(b.allocator, new_partition) catch unreachable;
 
         new_partition.* = .{
             .name = name,
@@ -99,7 +99,7 @@ pub const DiskBuilder = struct {
         const b = d.owner;
 
         const gap = b.allocator.create(Partition) catch unreachable;
-        d.partitions.append(gap) catch unreachable;
+        d.partitions.append(b.allocator, gap) catch unreachable;
 
         const name = b.allocator.alloc(u8, 5) catch @panic("OOM");
         _ = std.fmt.bufPrint(name, "gap{:0>2}", .{ d.__gaps }) catch unreachable;
@@ -154,7 +154,19 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
 
     n.end();
 
-    const data_limits = try layouts.writeHeaders(builder.layout, img_file, builder, b, progress);
+    var wbuf: [512]u8 = undefined;
+    var rbuf: [512]u8 = undefined;
+
+    var file_writer = img_file.writer(&wbuf);
+    var file_reader = img_file.reader(&rbuf);
+
+    const data_limits = try layouts.writeHeaders(
+        builder.layout,
+        &file_writer,
+        &file_reader,
+        builder,
+        b,
+        progress);
 
     const partitions = builder.partitions.items;
 
@@ -167,7 +179,7 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
 
             if (start > data_limits.limit_end) @panic("Partition size is out of bounds!");
 
-            writePartition(b, &n, img_file, i);
+            writePartition(b, &n, &file_writer, &file_reader, i);
             n.completeOne();
         }
     }
@@ -176,25 +188,30 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
 }
 
 
-inline fn writePartition(b: *Build, p: *std.Progress.Node, f: fs.File, partition: *Partition) void {
+inline fn writePartition(
+    b: *Build, p: *std.Progress.Node,
+    writer: *fs.File.Writer,
+    reader: *fs.File.Reader,
+    partition: *Partition,
+) void {
     switch (partition.filesystem) {
         ._unused => {},
         .empty => {},
-        .vFAT => formats.fat.writePartition(b, p, f, partition),
+        .vFAT => formats.fat.writePartition(b, p, writer, reader, partition),
     }
 }
 
 
 // utils
-pub inline fn gotoSector(f: fs.File, sector: u32) void {
+pub inline fn gotoSector(f: *fs.File.Writer, sector: u32) void {
     f.seekTo(sector * 0x200) catch unreachable;
 }
-pub inline fn gotoOffset(f: fs.File, sector: u32, offset: usize) void {
+pub inline fn gotoOffset(f: *fs.File.Writer, sector: u32, offset: usize) void {
     f.seekTo(sector * 0x200 + offset) catch unreachable;
 }
 
 pub inline fn writeI(w: *fs.File.Writer, comptime T: type, value: T) void {
-    w.writeInt(T, value, .little) catch unreachable;
+    w.interface.writeInt(T, value, .little) catch unreachable;
 }
 
 

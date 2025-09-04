@@ -11,14 +11,15 @@ pub const Limits = struct {
 
 pub fn writeHeaders(
     l: DiskLayout,
-    img_file: std.fs.File,
+    file_writer: *std.fs.File.Writer,
+    file_reader: *std.fs.File.Reader,
     builder: *imageBuilder.DiskBuilder,
     b: *std.Build,
     progress: *const std.Progress.Node,
 ) !Limits {
     return switch (l) {
-        .GPT => Gpt.write_headers(img_file, builder, b, progress),
-        .MBR => Mbr.write_headers(img_file, builder, b, progress),
+        .GPT => Gpt.write_headers(file_writer, file_reader, builder, b, progress),
+        .MBR => Mbr.write_headers(file_writer, file_reader, builder, b, progress),
     };
 }
 

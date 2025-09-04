@@ -5,14 +5,12 @@ const Crc32 = std.hash.Crc32;
 const Guid = @import("../Guid.zig").Guid;
 
 pub fn write_headers(
-    img_file: std.fs.File,
+    writer: *std.fs.File.Writer,
+    reader: *std.fs.File.Reader,
     builder: *imageBuilder.DiskBuilder,
     b: *std.Build,
     progress: *const std.Progress.Node,
 ) !layouts.Limits {
-
-    var w = img_file.writer();
-    const r = img_file.reader();
 
     // random data
     var sectors_count: usize = builder.size_sectors;
@@ -29,8 +27,8 @@ pub fn write_headers(
         var n2 = n.start("Creating Protective MBR", 1);
         {
             // partition entry #1
-            gotoOffset(img_file, 0, 0x1BE);
-            writeI(&w, u8, 0x00); // bootable partition
+            gotoOffset(writer, 0, 0x1BE);
+            writeI(writer, u8, 0x00); // bootable partition
 
             const cylinder_0 = 2 / (255 * 63);
             const temp_0 = 2 % (255 * 63);
@@ -38,10 +36,10 @@ pub fn write_headers(
             const sector_0 = (temp_0 % 63) + 1;
             const addr_0: u16 = @truncate((sector_0 & 0x3F) | ((cylinder_0 >> 2) & 0xC0));
 
-            writeI(&w, u8, head_0); // start CHS head (legacy)
-            writeI(&w, u16, addr_0); // start CHS addr (legacy)
+            writeI(writer, u8, head_0); // start CHS head (legacy)
+            writeI(writer, u16, addr_0); // start CHS addr (legacy)
 
-            writeI(&w, u8, 0xEE); // partition type: GPT protective
+            writeI(writer, u8, 0xEE); // partition type: GPT protective
 
             const cylinder_1 = last_sector / (255 * 63);
             const temp_1 = last_sector % (255 * 63);
@@ -49,43 +47,43 @@ pub fn write_headers(
             const sector_1 = (temp_1 % 63) + 1;
             const addr_1: u16 = @truncate((sector_1 & 0x3F) | ((cylinder_1 >> 2) & 0xC0));
 
-            writeI(&w, u8, head_1); // end CHS head (legacy)
-            writeI(&w, u16, addr_1); // end CHS (legacy)
+            writeI(writer, u8, head_1); // end CHS head (legacy)
+            writeI(writer, u16, addr_1); // end CHS (legacy)
 
-            writeI(&w, u32, 1); // first sector
-            writeI(&w, u32, last_sector); // last sector
+            writeI(writer, u32, 1); // first sector
+            writeI(writer, u32, last_sector); // last sector
 
             // BOOT sector signature
-            gotoOffset(img_file, 0, 0x1FE);
-            _ = img_file.write("\x55\xAA") catch unreachable;
+            gotoOffset(writer, 0, 0x1FE);
+            _ = writer.interface.write("\x55\xAA") catch unreachable;
             n2.end();
         }
 
         n2 = n.start("Creating GPT Table", 1);
         {
-            gotoSector(img_file, 1);
+            gotoSector(writer, 1);
 
-            _ = w.write("EFI PART") catch unreachable; // Signature
-            _ = w.write("\x00\x00\x01\x00") catch unreachable; // Revision
+            _ = writer.interface.write("EFI PART") catch unreachable; // Signature
+            _ = writer.interface.write("\x00\x00\x01\x00") catch unreachable; // Revision
 
-            writeI(&w, u32, 92); // Header size
-            writeI(&w, u32, 0); // header CRC32 (temp)
-            writeI(&w, u32, 0); // Reserved
+            writeI(writer, u32, 92); // Header size
+            writeI(writer, u32, 0); // header CRC32 (temp)
+            writeI(writer, u32, 0); // Reserved
 
-            writeI(&w, u64, 1); // Current LBA Header
-            writeI(&w, u64, last_sector); // Backup LBA Header
+            writeI(writer, u64, 1); // Current LBA Header
+            writeI(writer, u64, last_sector); // Backup LBA Header
 
-            writeI(&w, u64, first_useable); // First usable LBA
-            writeI(&w, u64, last_useable); // Last usable LBA
+            writeI(writer, u64, first_useable); // First usable LBA
+            writeI(writer, u64, last_useable); // Last usable LBA
 
             const disk_guid = if (builder.identifier) |idtf|
                 Guid.fromString(idtf) catch @panic("Invalid GUID identifier") else Guid.new();
-            writeI(&w, u128, @bitCast(disk_guid)); // Disk GUID
+            writeI(writer, u128, @bitCast(disk_guid)); // Disk GUID
 
-            writeI(&w, u64, 2); // Partition table LBA
-            writeI(&w, u32, 128); // Partition entry count
-            writeI(&w, u32, 128); // Partition entry size
-            writeI(&w, u32, 0); // partition table CRC32 (temp)
+            writeI(writer, u64, 2); // Partition table LBA
+            writeI(writer, u32, 128); // Partition entry count
+            writeI(writer, u32, 128); // Partition entry size
+            writeI(writer, u32, 0); // partition table CRC32 (temp)
             n2.end();
         }
 
@@ -100,33 +98,33 @@ pub fn write_headers(
             for (partitions) |i| {
                 if (i.filesystem == ._unused) { offset += i.size; continue; }
 
-                gotoOffset(img_file, 2, @truncate(index * 128));
+                gotoOffset(writer, 2, @truncate(index * 128));
 
                 switch (i.filesystem) { // paartition type GUID
                     .vFAT => {
-                        _ = w.write("\x28\x73\x2a\xc1\x1f\xf8\xd2\x11") catch unreachable;
-                        _ = w.write("\xba\x4b\x00\xa0\xc9\x3e\xc9\x3b") catch unreachable;
+                        _ = writer.interface.write("\x28\x73\x2a\xc1\x1f\xf8\xd2\x11") catch unreachable;
+                        _ = writer.interface.write("\xba\x4b\x00\xa0\xc9\x3e\xc9\x3b") catch unreachable;
                     },
                     .empty => {
-                        _ = w.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
-                        _ = w.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
+                        _ = writer.interface.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
+                        _ = writer.interface.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
                     },
                     else => std.debug.panic("Unhandled file system {s}!", .{@tagName(i.filesystem)})
                 }
 
                 const part_guid = if (i.identifier) |idtf|
                     Guid.fromString(idtf) catch @panic("Invalid GUID identifier") else Guid.new();
-                writeI(&w, u128, @bitCast(part_guid)); // partition unique GUID
+                writeI(writer, u128, @bitCast(part_guid)); // partition unique GUID
 
-                writeI(&w, u64, offset); // first LBA
-                writeI(&w, u64, offset + i.size - 1); // last LBA
+                writeI(writer, u64, offset); // first LBA
+                writeI(writer, u64, offset + i.size - 1); // last LBA
 
-                writeI(&w, u64, 0); // attributes
+                writeI(writer, u64, 0); // attributes
 
                 // partition name
                 @memset(&utf16_buf, 0);
                 _ = std.unicode.utf8ToUtf16Le(&utf16_buf, i.name) catch unreachable;
-                _ = w.write(@as([*]u8, @ptrCast(&utf16_buf))[0 .. 72 * 2]) catch unreachable;
+                _ = writer.interface.write(@as([*]u8, @ptrCast(&utf16_buf))[0 .. 72 * 2]) catch unreachable;
 
                 i.start = offset+1;
                 offset += i.size;
@@ -142,25 +140,25 @@ pub fn write_headers(
             const buf_2: []u8 = buf[0..92];
 
             // back a little
-            gotoSector(img_file, 2);
+            gotoSector(writer, 2);
 
             // calculate partition table's CRC32
-            _ = r.read(buf) catch unreachable;
+            _ = reader.read(buf) catch unreachable;
             const hash1 = Crc32.hash(buf);
             n2.completeOne();
 
-            gotoOffset(img_file, 1, 0x58);
-            writeI(&w, u32, hash1);
+            gotoOffset(writer, 1, 0x58);
+            writeI(writer, u32, hash1);
 
             // calculate header's CRC32
-            gotoSector(img_file, 1);
-            _ = r.read(buf_2) catch unreachable;
+            gotoSector(writer, 1);
+            _ = reader.read(buf_2) catch unreachable;
             std.mem.writeInt(u32, buf_2[0x10..0x14], 0, .little);
             const hash2 = Crc32.hash(buf_2);
             n2.completeOne();
 
-            gotoOffset(img_file, 1, 0x10);
-            writeI(&w, u32, hash2);
+            gotoOffset(writer, 1, 0x10);
+            writeI(writer, u32, hash2);
 
             b.allocator.free(buf);
 
@@ -171,16 +169,16 @@ pub fn write_headers(
         {
             var buf: [512]u8 = undefined;
 
-            gotoSector(img_file, 1);
-            _ = r.read(&buf) catch unreachable;
-            gotoSector(img_file, last_sector);
-            _ = w.write(&buf) catch unreachable;
+            gotoSector(writer, 1);
+            _ = reader.read(&buf) catch unreachable;
+            gotoSector(writer, last_sector);
+            _ = writer.interface.write(&buf) catch unreachable;
 
             for (0..32) |i| {
-                gotoSector(img_file, @truncate(2 + i));
-                _ = r.read(&buf) catch unreachable;
-                gotoSector(img_file, @truncate(last_sector - 33 + i));
-                _ = w.write(&buf) catch unreachable;
+                gotoSector(writer, @truncate(2 + i));
+                _ = reader.read(&buf) catch unreachable;
+                gotoSector(writer, @truncate(last_sector - 33 + i));
+                _ = writer.interface.write(&buf) catch unreachable;
             }
         }
 
