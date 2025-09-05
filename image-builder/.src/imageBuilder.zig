@@ -17,7 +17,8 @@ pub fn addBuildDiskImage(
     out_path: []const u8,
 ) *DiskBuilder {
     return DiskBuilder.create(
-        b, layout,
+        b,
+        layout,
         size_sectors,
         identifier,
         out_path,
@@ -102,7 +103,7 @@ pub const DiskBuilder = struct {
         d.partitions.append(b.allocator, gap) catch unreachable;
 
         const name = b.allocator.alloc(u8, 5) catch @panic("OOM");
-        _ = std.fmt.bufPrint(name, "gap{:0>2}", .{ d.__gaps }) catch unreachable;
+        _ = std.fmt.bufPrint(name, "gap{:0>2}", .{d.__gaps}) catch unreachable;
 
         gap.* = .{
             .name = name,
@@ -128,9 +129,7 @@ pub const Partition = struct {
     owner: *Build,
 };
 
-
 fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
-
     const builder: *DiskBuilder = @fieldParentPtr("step", step);
     const b = builder.owner;
     const progress = &options.progress_node;
@@ -154,11 +153,8 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
 
     n.end();
 
-    var wbuf: [512]u8 = undefined;
-    var rbuf: [512]u8 = undefined;
-
-    var file_writer = img_file.writer(&wbuf);
-    var file_reader = img_file.reader(&rbuf);
+    var file_writer = img_file.writer(&.{});
+    var file_reader = img_file.reader(&.{});
 
     const data_limits = try layouts.writeHeaders(
         builder.layout,
@@ -166,7 +162,8 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
         &file_reader,
         builder,
         b,
-        progress);
+        progress,
+    );
 
     const partitions = builder.partitions.items;
 
@@ -184,12 +181,11 @@ fn make(step: *Step, options: Step.MakeOptions) anyerror!void {
         }
     }
     n.end();
-
 }
 
-
 inline fn writePartition(
-    b: *Build, p: *std.Progress.Node,
+    b: *Build,
+    p: *std.Progress.Node,
     writer: *fs.File.Writer,
     reader: *fs.File.Reader,
     partition: *Partition,
@@ -201,7 +197,6 @@ inline fn writePartition(
     }
 }
 
-
 // utils
 pub inline fn gotoSector(f: *fs.File.Writer, sector: u32) void {
     f.seekTo(sector * 0x200) catch unreachable;
@@ -209,11 +204,16 @@ pub inline fn gotoSector(f: *fs.File.Writer, sector: u32) void {
 pub inline fn gotoOffset(f: *fs.File.Writer, sector: u32, offset: usize) void {
     f.seekTo(sector * 0x200 + offset) catch unreachable;
 }
+pub inline fn gotoSectorR(f: *fs.File.Reader, sector: u32) void {
+    f.seekTo(sector * 0x200) catch unreachable;
+}
+pub inline fn gotoOffsetR(f: *fs.File.Reader, sector: u32, offset: usize) void {
+    f.seekTo(sector * 0x200 + offset) catch unreachable;
+}
 
 pub inline fn writeI(w: *fs.File.Writer, comptime T: type, value: T) void {
     w.interface.writeInt(T, value, .little) catch unreachable;
 }
-
 
 pub const SectorAllocator = struct {
     first: u32,

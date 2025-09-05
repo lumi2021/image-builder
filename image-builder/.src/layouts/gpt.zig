@@ -77,7 +77,9 @@ pub fn write_headers(
             writeI(writer, u64, last_useable); // Last usable LBA
 
             const disk_guid = if (builder.identifier) |idtf|
-                Guid.fromString(idtf) catch @panic("Invalid GUID identifier") else Guid.new();
+                Guid.fromString(idtf) catch @panic("Invalid GUID identifier")
+            else
+                Guid.new();
             writeI(writer, u128, @bitCast(disk_guid)); // Disk GUID
 
             writeI(writer, u64, 2); // Partition table LBA
@@ -96,7 +98,10 @@ pub fn write_headers(
 
             var index: usize = 0;
             for (partitions) |i| {
-                if (i.filesystem == ._unused) { offset += i.size; continue; }
+                if (i.filesystem == ._unused) {
+                    offset += i.size;
+                    continue;
+                }
 
                 gotoOffset(writer, 2, @truncate(index * 128));
 
@@ -109,11 +114,13 @@ pub fn write_headers(
                         _ = writer.interface.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
                         _ = writer.interface.write("\x00\x00\x00\x00\x00\x00\x00\x00") catch unreachable;
                     },
-                    else => std.debug.panic("Unhandled file system {s}!", .{@tagName(i.filesystem)})
+                    else => std.debug.panic("Unhandled file system {s}!", .{@tagName(i.filesystem)}),
                 }
 
                 const part_guid = if (i.identifier) |idtf|
-                    Guid.fromString(idtf) catch @panic("Invalid GUID identifier") else Guid.new();
+                    Guid.fromString(idtf) catch @panic("Invalid GUID identifier")
+                else
+                    Guid.new();
                 writeI(writer, u128, @bitCast(part_guid)); // partition unique GUID
 
                 writeI(writer, u64, offset); // first LBA
@@ -126,7 +133,7 @@ pub fn write_headers(
                 _ = std.unicode.utf8ToUtf16Le(&utf16_buf, i.name) catch unreachable;
                 _ = writer.interface.write(@as([*]u8, @ptrCast(&utf16_buf))[0 .. 72 * 2]) catch unreachable;
 
-                i.start = offset+1;
+                i.start = offset + 1;
                 offset += i.size;
                 index += 1;
             }
@@ -139,11 +146,10 @@ pub fn write_headers(
             var buf = b.allocator.alloc(u8, 128 * 128) catch unreachable;
             const buf_2: []u8 = buf[0..92];
 
-            // back a little
-            gotoSector(writer, 2);
-
             // calculate partition table's CRC32
+            gotoSectorR(reader, 2);
             _ = reader.read(buf) catch unreachable;
+
             const hash1 = Crc32.hash(buf);
             n2.completeOne();
 
@@ -151,8 +157,9 @@ pub fn write_headers(
             writeI(writer, u32, hash1);
 
             // calculate header's CRC32
-            gotoSector(writer, 1);
+            gotoSectorR(reader, 1);
             _ = reader.read(buf_2) catch unreachable;
+
             std.mem.writeInt(u32, buf_2[0x10..0x14], 0, .little);
             const hash2 = Crc32.hash(buf_2);
             n2.completeOne();
@@ -169,13 +176,13 @@ pub fn write_headers(
         {
             var buf: [512]u8 = undefined;
 
-            gotoSector(writer, 1);
+            gotoSectorR(reader, 1);
             _ = reader.read(&buf) catch unreachable;
             gotoSector(writer, last_sector);
             _ = writer.interface.write(&buf) catch unreachable;
 
             for (0..32) |i| {
-                gotoSector(writer, @truncate(2 + i));
+                gotoSectorR(reader, @truncate(2 + i));
                 _ = reader.read(&buf) catch unreachable;
                 gotoSector(writer, @truncate(last_sector - 33 + i));
                 _ = writer.interface.write(&buf) catch unreachable;
@@ -190,10 +197,11 @@ pub fn write_headers(
         .limit_start = first_useable,
         .limit_end = last_useable,
     };
-
 }
 
 // utils
 const gotoSector = imageBuilder.gotoSector;
 const gotoOffset = imageBuilder.gotoOffset;
+const gotoSectorR = imageBuilder.gotoSectorR;
+const gotoOffsetR = imageBuilder.gotoOffsetR;
 const writeI = imageBuilder.writeI;
