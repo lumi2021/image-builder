@@ -148,7 +148,7 @@ pub fn write_headers(
 
             // calculate partition table's CRC32
             gotoSectorR(reader, 2);
-            _ = reader.read(buf) catch unreachable;
+            _ = reader.interface.readSliceAll(buf) catch unreachable;
 
             const hash1 = Crc32.hash(buf);
             n2.completeOne();
@@ -158,7 +158,7 @@ pub fn write_headers(
 
             // calculate header's CRC32
             gotoSectorR(reader, 1);
-            _ = reader.read(buf_2) catch unreachable;
+            _ = reader.interface.readSliceAll(buf_2) catch unreachable;
 
             std.mem.writeInt(u32, buf_2[0x10..0x14], 0, .little);
             const hash2 = Crc32.hash(buf_2);
@@ -177,13 +177,13 @@ pub fn write_headers(
             var buf: [512]u8 = undefined;
 
             gotoSectorR(reader, 1);
-            _ = reader.read(&buf) catch unreachable;
+            _ = reader.interface.readSliceAll(&buf) catch unreachable;
             gotoSector(writer, last_sector);
             _ = writer.interface.write(&buf) catch unreachable;
 
             for (0..32) |i| {
                 gotoSectorR(reader, @truncate(2 + i));
-                _ = reader.read(&buf) catch unreachable;
+                _ = reader.interface.readSliceAll(&buf) catch unreachable;
                 gotoSector(writer, @truncate(last_sector - 33 + i));
                 _ = writer.interface.write(&buf) catch unreachable;
             }
