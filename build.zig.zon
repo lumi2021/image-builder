@@ -1,0 +1,17 @@
+.{
+    .name = .image_builder_tests,
+    .version = "0.1.0",
+
+    .fingerprint = 0xb2977f2f56e7138b,
+    .minimum_zig_version = "0.17.0",
+
+    .dependencies = .{
+        .disklib_lib = .{ .path = "disklib-lib" },
+        .disklib_exe = .{ .path = "disklib-exe" },
+    },
+
+    .paths = .{
+        "build.zig",
+        "src",
+    },
+}

@@ -1,0 +1,16 @@
+.{
+    .name = .disklib_exe,
+    .version = "0.0.0",
+    
+    .fingerprint = 0x6584142995d9a181,
+    .minimum_zig_version = "0.17.0",
+    
+    .dependencies = .{
+    },
+    
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
